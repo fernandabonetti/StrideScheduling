@@ -1,7 +1,13 @@
 //Define the number of tickets
-#define MAX_TICKETS 15
-#define INITIAL_TICKETS 10
+#define DEFAULT_TICKETS 50
+#define CONST 10000
 
+
+//defining the HEAP macros
+#define leftson(x) (2 * x) //Filho a esquerda
+#define rightson(x) (2 * x + 1) //Filho a direita
+#define dad(x) (x % 2 ? (x-1)/2 : x/2) //Pai (Se for par ou ímpar)
+#define valido(x) (x <= last)
 
 // Per-CPU state
 struct cpu {
@@ -69,6 +75,8 @@ struct proc {
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
   int tickets;                 //number of tickets of this process
+  ull stride;                  //the stride
+  int pass;                     //the process pass
   int win;                     //number of times the process won the cpu
 };
 

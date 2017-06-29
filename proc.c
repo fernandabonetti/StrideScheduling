@@ -14,6 +14,13 @@ struct {
 
 static struct proc *initproc;
 
+/*----------------------Defining the the HEAP---------------*/
+struct {
+  struct spinlock hlock; //trava para a HEAP
+  struct proc proc[NPROC]; //processos runnable na heap
+} heap;
+
+int last = 0;
 int nextpid = 1;
 extern void forkret(void);
 extern void trapret(void);
@@ -98,7 +105,7 @@ userinit(void)
   p->tf->eflags = FL_IF;
   p->tf->esp = PGSIZE;
   p->tf->eip = 0;  // beginning of initcode.S
-  p->tickets = MAX_TICKETS; //initcode also needs tickets
+  p->tickets = DEFAULT_TICKETS; //initcode also needs tickets
   safestrcpy(p->name, "initcode", sizeof(p->name));
   p->cwd = namei("/");
 
@@ -177,7 +184,7 @@ fork(int numtickets)  //fork receives the number of tickets of the process
   //before it returns, we have to set the tickets to EVERY process
 
   if(numtickets==0){
-    np->tickets=INITIAL_TICKETS;
+    np->tickets=DEFAULT_TICKETS;
   }else{
     np->tickets=numtickets;
   }
@@ -278,26 +285,52 @@ wait(void)
   }
 }
 
-//---------------------Randomize it --------------------
+// DEFINING THE HEAP STRUCTURE
+//Only the runnable processes are in
 
-static
-unsigned long
-lcg_rand(unsigned long a)
-{
-  return (a * 279470273UL) % 4294967291UL;
+//Fixing the HEAP from i to the necessary level
+void parentHeapFixing(int i){
+  int tmp;
+  if(i == 1) return; //Caso for a raiz, retorna
+  if(heap.proc[dad(i)] > heap.proc[i]){ //Se o pai for maior que o elemento considerado, troca e chama para o pai
+    tmp = heap.proc[dad(i)];
+    heap.proc[dad(i)] = heap.proc[i];
+    heap.proc[i] = tmp;
+  }
+  parentHeapFixing(dad(i));
 }
 
-//----------------Lottery Total------------------------
-int lotteryTotal(void){
-  struct proc *p;
-  int total_tickets=0;
+void childHeapFixing(int i){ //Corrige a heap do elemento i até o nível necessário
+  int smallest = i, tmp;
 
-  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-    if(p->state==RUNNABLE){
-      total_tickets+=p->tickets;
-    }
+  if(valido(leftson(i)) && heap[leftson(i)] < heap[smallest]) smallest = leftson(i);
+  if(valido(rightson(i)) && heap[rightson(i)] < heap[smallest]) smallest = rightson(i);
+
+  if(smallest != i){
+    tmp = heap.proc[smallest];
+    heap.proc[smallest] = heap.proc[i];
+    heap.proc[i] = tmp;
+    childHeapFixing(smallest);
   }
-  return total_tickets;
+  return;
+}
+
+//Inserting on the HEAP structure
+void insert(struct proc*){
+  acquire(&heap.hlock); //dou um lock na minha heap
+  heap.proc[++last] = p->pass;
+  parentHeapFixing(last);
+  release(&heap.hlock);
+}
+
+// Extracting the minimum pass from the HEAP
+int extract(){
+  int ans = heap.proc[1];
+  acquire(&heap.hlock);
+  heap.proc[1] = heap.proc[last--];
+  childHeapFixing(1);
+  release(&heap.hlock);
+  return ans;
 }
 
 
@@ -313,53 +346,34 @@ void
 scheduler(void)
 {
   struct proc *p;
-  int total_tickets, runval=0;
-  int chosen;
+
   for(;;){
-    runval++;
     // Enable interrupts on this processor.
     sti();
+
+    // Loop over process table looking for process to run.
     acquire(&ptable.lock);
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+      if(p->state != RUNNABLE)
+        continue;
 
-    //if there's no available tickets, there's no winner
-    total_tickets=lotteryTotal();
+      // Switch to chosen process.  It is the process's job
+      // to release ptable.lock and then reacquire it
+      // before jumping back to us.
+      proc = p;
+      switchuvm(p);
+      p->state = RUNNING;
+      swtch(&cpu->scheduler, p->context);
+      switchkvm();
 
-    if(total_tickets > 0){
-      //Finds the winner by LCG random
-      chosen=lcg_rand(lcg_rand(runval * ticks));
-      if(chosen < 0) chosen *= (-1);
-      if(total_tickets < chosen){
-        chosen %= total_tickets;  //Chosen is in the interval of tickets
-      }
-      // Loop over process table looking for process to run
-      for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-        if(p->state == RUNNABLE){
-          chosen-=p->tickets;
-        }
-        if(p->state !=RUNNABLE || chosen >= 0){
-            continue;
-        }
-        // Switch to chosen process.  It is the process's job
-        // to release ptable.lock and then reacquire it
-        // before jumping back to us.
-
-        //cprintf("PROCESS %d IS WITH THE CPU NOW.\n", p->pid);
-        proc = p;
-        switchuvm(p);
-        p->state = RUNNING;
-        p->win++;
-        swtch(&cpu->scheduler, p->context);
-        switchkvm();
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        proc = 0;
-        break;
-      }
+      // Process is done running for now.
+      // It should have changed its p->state before coming back.
+      proc = 0;
     }
     release(&ptable.lock);
+
   }
 }
-
 // Enter scheduler.  Must hold only ptable.lock
 // and have changed proc->state. Saves and restores
 // intena because intena is a property of this
